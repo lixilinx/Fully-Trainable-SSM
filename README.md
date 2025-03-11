@@ -1,7 +1,14 @@
-# Complex-state-SSM
-This is my simple fully trainable state space model (SSM) implementation. In most works, the state matrix ($A$) is fixed to certain ad hoc ones. Actually, it is the most important matrix in an SSM accounting for the long term memories. We should learn it from data! To achieve that, we need to turn to the eigenvalue decomposition (EVD) of $A$, and generally the state vectors can only be complex in an EVD form of SSM. Not a surprise as the EVD only always exists in the domain of complex numbers, even for real matrices. 
+# Fully Trainable SSM
 
-I also put a simple demo to show that SSMs with complex states do learn well.  
+Some experimental work on the state space model (SSM). It's in progress, and mainly for fun.  
+
+In most works, the state matrix ($A$) is fixed, say the HiPPO matrix. Actually, it is the most important matrix in an SSM accounting for the long term memories. We should learn it from the data. There are two possible modal decomposition forms suitable for highly efficent fully trainable SSM learnings:
+
+1) The eigenvalue decomposition (EVD) form. This is not difficult to implement as $A$ is diagonal. But the state vectors can be complex since the EVD only always exists in the domain of complex numbers, even for real matrices.
+
+2) Another real number only modal decomposition forms is to make $A$ a block diagonal matrix with block size $2\times 2$. It is more difficult to train than the EVD form. But, everything stays in the domain of real numbers nicely.
+
+ I have some very rough notes [here](https://www.overleaf.com/read/wwjbsyjsyfrm#f6fa3b).
 
 
 
