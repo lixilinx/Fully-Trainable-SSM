@@ -6,11 +6,11 @@ from torchvision import datasets, transforms
 state_space_model_type = "complex" # or "real"
 optimizer = "adam" # or "psgd"
 
-print(f"State space model type: {state_space_model_type}")
+print(f"Domain of state vectors: {state_space_model_type}")
 print(f"Optimizer: {optimizer}\n")
 
 if state_space_model_type == "complex":
-    from state_space_models import StateSpaceModel as SSM
+    from state_space_models import ComplexStateSpaceModel as SSM
 else:
     from state_space_models import RealStateSpaceModel as SSM
    
