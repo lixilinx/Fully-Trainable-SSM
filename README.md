@@ -13,6 +13,6 @@ In most works, the state matrix ($A$) is fixed, say the HiPPO matrix. Actually, 
 
 
 ## Comparison against Mamba and Attention
-On a simple language problem we compare the training loss perplexities of our Complex SSM vs Mamba and Attention
+On a simple language problem we compare the training loss perplexities of our Complex SSM vs Real vs Mamba vs Attention
 
-![image](https://github.com/user-attachments/assets/a011bef1-3684-4420-849b-8cddd7bfed3d)
+![image](https://github.com/user-attachments/assets/ba60d266-59e8-43de-bee8-ac02b37571d6)
