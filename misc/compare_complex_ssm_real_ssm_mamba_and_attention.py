@@ -9,19 +9,9 @@ from transformers import AutoTokenizer
 from flash_attn import flash_attn_func
 import time
 
-# ---- Fast Convolution Implementation ----
-def fast_conv(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
-    len1, _ = a.shape
-    _, len2, _ = b.shape
-    T = 2**int(np.ceil(np.log2(len1 + len2 - 1)))
-    A = torch.fft.fft(a, n=T, dim=0)
-    B = torch.fft.fft(b, n=T, dim=1)
-    C = A * B
-    c = torch.fft.ifft(C, n=T, dim=1)
-    return c[..., :(len1 + len2 - 1), :]
 
 
-# ====================== Enhanced Components ======================
+
 class RMSNorm(nn.Module):
     """Root Mean Square Layer Normalization"""
     def __init__(self, dim: int, eps: float = 1e-6):
@@ -37,6 +27,18 @@ class RMSNorm(nn.Module):
         return output * self.weight
 
 # ====================== Enhanced SSM Modules ======================
+
+# ---- Fast Convolution Implementation ----
+def fast_conv(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    len1, _ = a.shape
+    _, len2, _ = b.shape
+    T = 2**int(np.ceil(np.log2(len1 + len2 - 1)))
+    A = torch.fft.fft(a, n=T, dim=0)
+    B = torch.fft.fft(b, n=T, dim=1)
+    C = A * B
+    c = torch.fft.ifft(C, n=T, dim=1)
+    return c[..., :(len1 + len2 - 1), :]
+
 class CustomComplexSSM(nn.Module):
     def __init__(self, input_size: int, state_size: int, output_size: int):
         super().__init__()
@@ -54,6 +56,141 @@ class CustomComplexSSM(nn.Module):
         x = fast_conv(A_powers, uB)[:, :seq_len]
         y = torch.real(torch.einsum('blz,zo->blo', x, self.C)) + self.D
         return y, x[:, -1]
+
+def fast_conv_real(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """
+    Inputs:
+        a: tensor with shape [len1, K, n, n] representing len1 block diagonal matrices, 
+           each block has size n x n, and a total of K such blocks. 
+        b: another torch tensor with shape [batch, len2, K, n] representing K vectors, 
+           and each has length n.
+        
+    Outputs:
+        c = conv(b, a) with shape [batch, len1 + len2 - 1, K, n]. 
+        Following the 'row major' convention, here it's the vector-matrix product. 
+        So I put a after b. 
+    """
+    len1, _, _, _ = a.shape
+    _, len2, _, _ = b.shape
+    T = 2**int(np.ceil(np.log2(len1 + len2 - 1)))
+    A = torch.fft.rfft(a, n=T, dim=0)
+    B = torch.fft.rfft(b, n=T, dim=1)
+    C = torch.einsum("blki, lkij->blkj", B, A)
+    c = torch.fft.irfft(C, n=T, dim=1)
+    return c[:, :(len1 + len2 - 1)]
+
+
+def A_powers(A: torch.Tensor, t: int) -> torch.Tensor:
+    """
+    Inputs:
+        A: tensor with shape [K, n, n] representing a block diagonal matrices, 
+           each block has size n x n, and a total of K such blocks.
+        t: a positive integer.
+        
+    Outputs:
+        torch.stack([I, A, A^2, ..., A^(t - 1)], dim=0), 
+        a tensor with shape [t, K, n, n]. 
+    """
+    K, n, _ = A.shape 
+    eye = torch.eye(n, dtype=A.dtype, device=A.device)
+    result = torch.stack([eye.repeat(K, 1, 1), A])
+    lift = A @ A
+    for _ in range(int(np.ceil(np.log2(t))) - 1):
+        result = torch.cat([result, result @ lift])
+        lift = lift @ lift
+    return result[:t]
+
+
+class RealStateSpaceModel(torch.nn.Module):
+    """
+    It returns a fully trainable real state SSM defined as:
+        
+        x_t = A @ x_{t-1} + B @ u_t,
+        y_t = C @ x_t + D @ u_t + b,
+        
+    where:
+        
+        u_t, 1 <= t <= T, are the sequences of (real) inputs,
+        x_t, 1 <= t <= T, are the sequence of (real) states,
+        y_t, 1 <= t <= T, are the sequence of (real) outputs,
+        matrices A (block diagonal real), B (real) and C (real) are mandatory, 
+        matrix D (real) and bias b (real) are optional,
+        and x_0 is the initial (real) state. 
+        
+    Note that we use the tranposed version of these equations in the Python code 
+    by following the 'row major' convention.  
+    """ 
+    def __init__(self, input_size: int, state_size: int, output_size: int,  
+                 has_matrixD: bool=False, has_bias: bool=False, decimation: int=1,
+                 init_scale_A: float=1 - 1e-4) -> None:
+        """
+        Inputs:
+            input_size, state_size and output_size: sizes of u, x, and y, respectively, 
+                    and the state_size must be an even number.
+            has_matrixD: matrix D is None if setting to False, otherwise not. 
+            has_bias: bias b is None if setting to False, otherwise not. 
+            decimation: decimate states and outputs if > 1 (same as the stride parameter in CNN),
+                        interpolate states if < 1 (ToDo; similar to tranposed CNN).
+            init_scale_A: set to < 1 such that the SSM is stable. 
+        """
+        super(RealStateSpaceModel, self).__init__()
+        state_blk_size = 2 # only value 2 makes sense in theory. 
+        assert(state_size%state_blk_size == 0)
+        self.state_blk_size = state_blk_size
+        self.state_num_blks = state_size // state_blk_size
+        theta = 2*torch.pi*torch.rand(state_size//2)
+        A = torch.zeros(self.state_num_blks, 2, 2)
+        A[:,0,0] = torch.cos(theta)
+        A[:,0,1] = torch.sin(theta)
+        A[:,1,0] = -torch.sin(theta)
+        A[:,1,1] = torch.cos(theta)
+        self.A = torch.nn.Parameter(init_scale_A * A) 
+        self.B = torch.nn.Parameter(
+            torch.randn(input_size, state_size)/(state_size + input_size)**0.5)
+        self.C = torch.nn.Parameter(
+            torch.randn(state_size, output_size)/state_size**0.5)
+        self.has_matrixD = has_matrixD
+        if has_matrixD:
+            self.D = torch.nn.Parameter(torch.zeros(input_size, output_size))
+        self.has_bias = has_bias
+        if has_bias:
+            self.b = torch.nn.Parameter(torch.zeros(output_size))
+        self.decimation = decimation
+        self.norm = RMSNorm(input_size)
+
+
+    def forward(self, u: torch.Tensor, x0: torch.Tensor | None = None) -> (torch.Tensor, torch.Tensor):
+        """
+        Inputs:
+            u: the real input tensor with shape [batch, length, input_size].
+            x0: the real initial state with shape [batch, state_num_blk, state_blk_size]. 
+            
+        Outputs:
+            y: the real output tensor with shape [batch, length, output_size].
+            x0: the real final state with shape [batch, state_num_blk, state_blk_size]. 
+        """            
+        u = self.norm(u)
+        _, length, _ = u.shape
+        Aps = A_powers(self.A, length + 1)
+        uB = u @ self.B # tranpose of math eq B*u
+        uB = torch.reshape(uB, (-1, length, self.state_num_blks, self.state_blk_size))
+        x = fast_conv_real(Aps[:-1], uB)[:, :length]
+        if x0 is not None:
+            x = x + torch.einsum("bki,lkij->blkj", x0, Aps[1:])
+        new_state = x[:, -1]
+        x = torch.reshape(x, (-1, length, self.state_num_blks * self.state_blk_size))
+        if self.decimation > 1: # decimate to length length//decimation
+            x = x[:, self.decimation-1::self.decimation]
+            if self.has_matrixD:
+                u = u[:, self.decimation-1::self.decimation]
+        y = x @ self.C # tranpose of math eq C * x
+        if self.has_matrixD:
+            y = y + u @ self.D # transpose of math eq D * u 
+        if self.has_bias:
+            y = y + self.b
+        return (y, new_state)
+
+
 
 class MambaSSM(nn.Module):
     def __init__(self, input_size: int, state_size: int, output_size: int):
@@ -93,6 +230,8 @@ class TinySSMLM(nn.Module):
             self.ssm = CustomComplexSSM(embed_dim, state_size, embed_dim)
         elif ssm_type == "mamba":
             self.ssm = MambaSSM(embed_dim, state_size, embed_dim)
+        elif ssm_type == "real":
+            self.ssm = RealStateSpaceModel(embed_dim, state_size, embed_dim)
             
         self.head = nn.Linear(embed_dim, vocab_size)
         nn.init.normal_(self.embedding.weight, mean=0.0, std=0.02)
@@ -253,7 +392,7 @@ def main():
     tokenizer.pad_token = tokenizer.eos_token
 
     # Load dataset
-    with open("input.txt", "r", encoding="utf-8") as f: # wget https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt
+    with open("input.txt", "r", encoding="utf-8") as f:
         text = f.read()
 
     # Prepare data
@@ -262,9 +401,11 @@ def main():
 
     # Initialize models
     complex_model = TinySSMLM(tokenizer.vocab_size, EMBED_DIM, STATE_SIZE, "complex").to(device)
+    real_model = TinySSMLM(tokenizer.vocab_size, EMBED_DIM, STATE_SIZE, "real").to(device)
     mamba_model = TinySSMLM(tokenizer.vocab_size, EMBED_DIM, STATE_SIZE, "mamba").to(device)
     attention_model = SmallAttentionLanguageModel(tokenizer.vocab_size, EMBED_DIM, NUM_HEADS, NUM_LAYERS).to(device)
     print('Complex Model Params: ', get_attention_model_param_count(complex_model))
+    print('Real Model Params: ', get_attention_model_param_count(real_model))
     print('Mamba Model Params: ', get_attention_model_param_count(mamba_model))
     print('Attention Model Params: ', get_attention_model_param_count(attention_model))
     # Train all models
@@ -286,6 +427,24 @@ def main():
     torch.cuda.synchronize()  # Ensure all GPU computations have finished
     end_time = time.time()
     print(f"Complex SSM training completed in {end_time - start_time:.2f} seconds.")
+
+
+    # Train Real SSM Model with timing
+    print("Training Real SSM Model...")
+    torch.cuda.synchronize()  # Ensure previous GPU operations are complete
+    start_time = time.time()
+    optimizer = Kron(
+        real_model.parameters(), 
+        lr_params=5e-3, 
+        momentum=0.9, 
+        lr_preconditioner=0.1, 
+        preconditioner_update_probability=0.1, 
+        preconditioner_type="whitening"
+    )
+    real_losses = train_model(optimizer, real_model, train_loader, device, "Real SSM")
+    torch.cuda.synchronize()  # Ensure all GPU computations have finished
+    end_time = time.time()
+    print(f"Real SSM training completed in {end_time - start_time:.2f} seconds.")
 
     # Train Mamba SSM Model with timing
     print("\nTraining Mamba SSM Model...")
@@ -325,10 +484,12 @@ def main():
     plt.figure(figsize=(12, 6))
     # Convert losses to perplexity (PPL)
     complex_ssm_ppl = np.exp(complex_losses)
+    real_ssm_ppl = np.exp(real_losses)
     mamba_ssm_ppl = np.exp(mamba_losses)
     attn_ppl = np.exp(attn_losses)
 
     plt.plot(complex_ssm_ppl, label="Complex SSM", linestyle='-', marker='')
+    plt.plot(real_ssm_ppl, label="Real SSM", linestyle='-', marker='')
     plt.plot(mamba_ssm_ppl, label="Mamba SSM", linestyle='-', marker='')
     plt.plot(attn_ppl, label='FlashAttention', linestyle='-', marker='')
 
