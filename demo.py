@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torchvision import datasets, transforms
 
-state_space_model_type = "complex" # or "real"
+state_space_model_type = "real" # or "complex"
 optimizer = "adam" # or "psgd"
 
 print(f"Domain of state vectors: {state_space_model_type}")
@@ -11,11 +11,13 @@ print(f"Optimizer: {optimizer}\n")
 
 if state_space_model_type == "complex":
     from state_space_models import ComplexStateSpaceModel as SSM
+    increase_state_size = 1
 else:
     from state_space_models import RealStateSpaceModel as SSM
+    increase_state_size = 2
    
 if optimizer == "psgd":
-    print("Need to download the psgd optimizer from: https://github.com/lixilinx/psgd_torch")
+    print("Need to download the psgd optimizer (https://github.com/lixilinx/psgd_torch or from other places)")
     import preconditioned_stochastic_gradient_descent as psgd
 
 train_loader = torch.utils.data.DataLoader(
@@ -40,8 +42,8 @@ test_loader = torch.utils.data.DataLoader(
 class SSMNet(torch.nn.Module):
     def __init__(self):
         super(SSMNet, self).__init__()
-        self.ssm1 = SSM(1, 16, 16)
-        self.ssm2 = SSM(16, 128, 128)
+        self.ssm1 = SSM(1, increase_state_size * 16, 16)
+        self.ssm2 = SSM(16, increase_state_size * 128, 128)
         self.linear = torch.nn.Linear(128, 10)
 
     def forward(self, u):
