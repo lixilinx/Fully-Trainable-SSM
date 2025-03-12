@@ -1,14 +1,37 @@
-# Fully Trainable SSM
+# Fully Trainable SSMs
 
-Some experimental work on the state space model (SSM). It's in progress, and mainly for fun.  
+## Causal 1D SSMs 
+A causal 1D SSM is defined as 
 
-In most works, the state matrix ($A$) is fixed, say the HiPPO matrix. Actually, it is the most important matrix in an SSM accounting for the long term memories. We should learn it from the data. There are two possible modal decomposition forms suitable for highly efficent fully trainable SSM learnings:
+$$ x_t =  Ax_{t-1} + B u_t, \quad  y_t =  C x_t + D u_t $$
 
-1) The eigenvalue decomposition (EVD) form. This is not difficult to implement as $A$ is diagonal. But the state vectors can be complex since the EVD only always exists in the domain of complex numbers, even for real matrices.
+where $u$, $x$ and $y$ are the input, state and output vectors, respectively. In many works, the state matrix $A$ is fixed to certain constant ones, say the HiPPO matrix. Actually, it is the most important matrix in an SSM accounting for its long term memories. We should learn it from data. There are two possible modal decompositions suitable for highly efficient fully trainable SSM learnings. 
 
-2) Another real number only modal decomposition forms is to make $A$ a block diagonal matrix with block size $2\times 2$. It is more difficult to train than the EVD form. But, everything stays in the domain of real numbers nicely.
+### Modal decomposition I 
+The eigenvalue decomposition (EVD) form. With EVD $A = V\Lambda V^{-1}$, we can introduce a (generally) complex state vector $V^{-1}x$ to diagonalize the state matrix. This is the easiest way to learn $A$. However, there may be some waste of degrees of freedoms with this practice.
 
- I have some very rough notes [here](https://www.overleaf.com/read/wwjbsyjsyfrm#f6fa3b).
+### Modal decomposition II
+
+Another modal decomposition is to stick to the domain of real numbers strictly. Say that $A$ has a pair of complex eigenvalues and eigenvectors: $A (v_R \pm j v_I) = (\lambda_R \pm j\lambda_I)( v_R \pm jv_I)$, where $j=\sqrt{-1}$. We can rewrite it as
+   
+$$
+A[v_R, v_I]= [v_R, v_I]  \begin{bmatrix}
+\lambda_R & \lambda_I \\
+-\lambda_I & \lambda_R 
+\end{bmatrix}
+$$
+
+This sugguests that we always can block diagonalize $A$, and those $2\times 2$ blocks will have either of the following forms
+
+$${\rm real \\, modes:}\\; \begin{bmatrix}
+\lambda_1 & 0 \\
+0 & \lambda_2 
+\end{bmatrix}, \quad {\rm complex \\, modes:}\\; \begin{bmatrix}
+\lambda_R & \lambda_I \\
+-\lambda_I & \lambda_R 
+\end{bmatrix}$$
+
+There are some rough notes [here](https://www.overleaf.com/read/wwjbsyjsyfrm#f6fa3b).
 
 
 
