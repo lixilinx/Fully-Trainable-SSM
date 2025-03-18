@@ -44,23 +44,28 @@ class ComplexStateSpaceModel(torch.nn.Module):
     def __init__(self, input_size: int, state_size: int, output_size: int, 
                  has_matrixD: bool=False, has_bias: bool=False, 
                  resample_up: int=1, resample_down: int=1, 
-                 init_scale_A: float=1 - 1e-4) -> None:
+                 enforce_stability: bool=False) -> None:
         """
         Inputs:
             input_size, state_size and output_size: sizes of u, x, and y, respectively.
             has_matrixD: matrix D is None if setting to False, otherwise not. 
             has_bias: bias b is None if setting to False, otherwise not. 
             resample_up, resample_down: resample the sequence with ratio resample_up/resample_down. 
-            init_scale_A: set to < 1 such that the SSM is stable. 
+            enforce_stability: set to True to enforce the poles to stay inside unit disc, 
+                        otherwise poles can be outside of unit disc (unstable for long sequences).  
         """
         super(ComplexStateSpaceModel, self).__init__()
         A = 2*torch.pi*torch.rand(state_size)
         A = torch.complex(torch.cos(A), torch.sin(A))
-        self.A = torch.nn.Parameter(init_scale_A * A)  
+        self.enforce_stability = enforce_stability
+        if enforce_stability:
+            self.A = torch.nn.Parameter(10 * A)
+        else:
+            self.A = torch.nn.Parameter(A)
         self.B = torch.nn.Parameter(
             torch.randn(input_size, state_size, dtype=torch.complex64)/(state_size + input_size)**0.5)
         self.C = torch.nn.Parameter(
-            torch.randn(state_size, output_size, dtype=torch.complex64)/state_size**0.5)
+            torch.randn(state_size, output_size, dtype=torch.complex64)/(state_size + output_size)**0.5)
         self.has_matrixD = has_matrixD
         if has_matrixD:
             self.D = torch.nn.Parameter(torch.zeros(input_size, output_size))
@@ -84,7 +89,11 @@ class ComplexStateSpaceModel(torch.nn.Module):
         if self.resample_up > 1:
             u = u.repeat_interleave(self.resample_up, 1)
         _, length, _ = u.shape
-        Aps = torch.pow(self.A, torch.arange(length + 1, device=self.A.device)[:, None])
+        if self.enforce_stability:
+            A = self.A * torch.rsqrt(self.A * self.A.conj() + 1) # pull inside the unit disc  
+        else:
+            A = self.A 
+        Aps = torch.pow(A, torch.arange(length + 1, device=self.A.device)[:, None])
         uB = u.to(torch.complex64) @ self.B # tranpose of math eq B*u
         x = fast_conv_complex(Aps[:-1], uB)[:, :length]
         if x0 is not None:
@@ -147,6 +156,25 @@ def A_powers(A: torch.Tensor, t: int) -> torch.Tensor:
     return result[:t]
 
 
+def shrink_eigs(A):
+    """
+    For a 2 x 2 matrix, we pull its largest eigenvalue into the unit disc as 
+    
+        lambda / sqrt(|lambda|^2 + 1)
+        
+    This function works only for 2 x 2 matrices. 
+    """
+    tr, det = A[...,0,0] + A[...,1,1], A[...,0,0] * A[...,1,1] - A[...,0,1] * A[...,1,0]
+    discriminant = tr*tr - 4*det
+    max_rr = torch.where(discriminant<=0, 
+                         det,   # a pair of complex eigenvalues; so |r|^2 = det 
+                         (torch.abs(tr) + torch.sqrt(torch.abs(discriminant) + 1e-30))**2/4,
+                         # two real eigenvalues; this gives max(r1^2, r2^2)
+                         )
+    sA = A * torch.rsqrt(max_rr[...,None,None] + 1)
+    return sA
+
+
 class RealStateSpaceModel(torch.nn.Module):
     """
     It returns a fully trainable real state SSM defined as:
@@ -169,7 +197,7 @@ class RealStateSpaceModel(torch.nn.Module):
     def __init__(self, input_size: int, state_size: int, output_size: int,  
                  has_matrixD: bool=False, has_bias: bool=False, 
                  resample_up: int=1, resample_down: int=1, 
-                 init_scale_A: float=1 - 1e-4, state_blk_size: int=2) -> None:
+                 enforce_stability: bool=False, state_blk_size: int=2) -> None:
         """
         Inputs:
             input_size, state_size and output_size: sizes of u, x, and y, respectively, 
@@ -177,7 +205,9 @@ class RealStateSpaceModel(torch.nn.Module):
             has_matrixD: matrix D is None if setting to False, otherwise not. 
             has_bias: bias b is None if setting to False, otherwise not. 
             resample_up, resample_down: resample the sequence with ratio resample_up/resample_down. 
-            init_scale_A: set to < 1 such that the SSM is stable. 
+            enforce_stability: set to True to enforce the poles to stay inside unit disc 
+                            (currently only works for state block size 2), 
+                            otherwise poles can be outside of unit disc (unstable for long sequences).  
             state_blk_size: an even integer for the block size of block diagonal matrix A.  
         """
         super(RealStateSpaceModel, self).__init__()
@@ -197,11 +227,16 @@ class RealStateSpaceModel(torch.nn.Module):
                 A[i] = torch.block_diag(*A2[i * state_blk_size//2 : (i + 1) * state_blk_size//2])
         else:
             A = A2
-        self.A = torch.nn.Parameter(init_scale_A * A) 
+        self.enforce_stability = enforce_stability
+        if enforce_stability:
+            assert(state_blk_size == 2)
+            self.A = torch.nn.Parameter(10 * A)
+        else:
+            self.A = torch.nn.Parameter(A) 
         self.B = torch.nn.Parameter(
             torch.randn(input_size, state_size)/(state_size + input_size)**0.5)
         self.C = torch.nn.Parameter(
-            torch.randn(state_size, output_size)/state_size**0.5)
+            torch.randn(state_size, output_size)/(state_size + output_size)**0.5)
         self.has_matrixD = has_matrixD
         if has_matrixD:
             self.D = torch.nn.Parameter(torch.zeros(input_size, output_size))
@@ -225,7 +260,11 @@ class RealStateSpaceModel(torch.nn.Module):
         if self.resample_up > 1:
             u = u.repeat_interleave(self.resample_up, 1)
         _, length, _ = u.shape
-        Aps = A_powers(self.A, length + 1)
+        if self.enforce_stability:
+            A = shrink_eigs(self.A)
+        else:
+            A = self.A
+        Aps = A_powers(A, length + 1)
         uB = u @ self.B # tranpose of math eq B*u
         uB = torch.reshape(uB, (-1, length, self.state_num_blks, self.state_blk_size))
         x = fast_conv_real(Aps[:-1], uB)[:, :length]
@@ -305,7 +344,7 @@ if __name__ == "__main__":
     A = torch.randn(K, n, n)
     powers = A_powers(A, t)
     powers_forloop = torch.eye(n).repeat(K, 1, 1)
-    for i in range(t - 1):
+    for i in range(t):
         print(f"Max err between fast and forloop powers of A at step {i+1}: {torch.max(torch.abs(powers[i] - powers_forloop))}")
         powers_forloop = powers_forloop @ A
     print("\n")
@@ -335,4 +374,10 @@ if __name__ == "__main__":
                               has_matrixD=True, has_bias=True, resample_up=3, resample_down=7)
     u = torch.randn(14, input_size)
     y, _ = ssm(u[None,:,:])
-    print(f"Sequence length before and after resampling real state SSM: {len(u)}, {y.shape[1]}")
+    print(f"Sequence length before and after resampling real state SSM: {len(u)}, {y.shape[1]}\n")
+    
+    # test function shrink_eigs
+    for _ in range(10):
+        A = torch.empty([]).exponential_() * torch.randn(2, 2)
+        sA = shrink_eigs(A)
+        print(f"Max |eigs| before and after shrinking: {torch.max(torch.abs(torch.linalg.eig(A)[0]))} --> {torch.max(torch.abs(torch.linalg.eig(sA)[0]))} ")

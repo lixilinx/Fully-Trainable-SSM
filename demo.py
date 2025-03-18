@@ -3,7 +3,7 @@ import numpy as np
 import torch
 from torchvision import datasets, transforms
 
-state_space_model_type = "real" # or "complex"
+state_space_model_type = "complex" # or "real"
 optimizer = "adam" # or "psgd"
 
 print(f"Domain of state vectors: {state_space_model_type}")
@@ -42,8 +42,8 @@ test_loader = torch.utils.data.DataLoader(
 class SSMNet(torch.nn.Module):
     def __init__(self):
         super(SSMNet, self).__init__()
-        self.ssm1 = SSM(1, increase_state_size * 16, 16)
-        self.ssm2 = SSM(16, increase_state_size * 128, 128)
+        self.ssm1 = SSM(1, increase_state_size * 16, 16, resample_down=4)
+        self.ssm2 = SSM(16, increase_state_size * 128, 128, resample_down=4)
         self.linear = torch.nn.Linear(128, 10)
 
     def forward(self, u):
@@ -59,10 +59,10 @@ class SSMNet(torch.nn.Module):
 
 device = torch.device("cuda:0")  
 ssmnet = SSMNet().to(device)
-lr0 = 5e-4
+lr0 = 1e-3
 if optimizer == "psgd":
     opt = psgd.Kron(ssmnet.parameters(), lr_params=lr0, lr_preconditioner=0.1, 
-                    momentum=0.9, preconditioner_type="whitening")
+                    momentum=0.9, preconditioner_type="whitening", grad_clip_max_norm=100)
 else:
     opt = torch.optim.Adam(ssmnet.parameters(), lr=lr0)
 
